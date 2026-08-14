@@ -1,4 +1,3 @@
-
 # 🛡️ MediaFlow Utility Pro
 
 > 🌐 **Language / Idioma:** English | [Versión en Español](README.md)
@@ -31,16 +30,16 @@ A desktop application (GUI) developed in **Python (CustomTkinter)** designed to 
 
 ---
 
-### ✨ Key Features and What's New
+### ✨ Key Features
 
 * **🎨 Modern and Intuitive GUI:** Built with **CustomTkinter** for a clean, responsive, and adaptable visual experience.
-* **📋 Multiline Download Queue (New):** Add multiple links at once by pasting a list of URLs into the multiline input field or importing a plain text file (`.txt`).
-* **🎵 ID3 Metadata & Auto Cover Art (New):** Integrated option to automatically embed thumbnails as album covers and song metadata for audio downloads.
-* **🔔 System Notifications (New):** Native desktop alerts upon completing queue download tasks.
+* **📋 Multiline Download Queue:** Add multiple links at once by pasting a list of URLs or importing a `.txt` file.
+* **🎵 ID3 Metadata & Auto Cover Art:** Integrated option to automatically embed thumbnails as album covers and song metadata for audio downloads.
+* **🔔 System Notifications:** Native desktop alerts upon completing download tasks.
 * **⚡ Advanced Management with yt-dlp:** Support for custom resolutions (up to 4K/2160p), container conversion (MP4, MKV, WebM, MP3, WAV, M4A), and playlist management.
 * **🔒 Proxy Management & Rotation:** Support for HTTP/SOCKS5 proxies, loading via public/custom APIs, and latency testing.
-* **🔑 Authentication Support:** Automatic session *cookies* import from browsers (Chrome, Firefox, Edge, Brave, Opera, Safari) to access private content from platforms where you hold a valid subscription.
-* **🚀 Cross-Platform Auto Launchers (New):** Includes quick-start scripts (`start.sh` and `start.bat`) that automate environment check and application launch.
+* **🔑 Authentication Support:** Automatic session cookies import from browsers to access private content from platforms where you hold a valid subscription.
+* **🚀 Cross-Platform Auto Launchers:** Includes quick-start scripts (`start.sh` and `start.bat`) that automate environment check and application launch.
 * **📱 Hybrid Mode (CLI/GUI):** Automatic environment detection; if run on **Termux (Android)** or headless environments, it automatically switches to console mode (CLI).
 
 ---
@@ -51,26 +50,25 @@ A desktop application (GUI) developed in **Python (CustomTkinter)** designed to 
 
 #### 1. Installing FFmpeg and Cloning
 
-| System | Installation Method |
+| System | Method |
 | :--- | :--- |
-| **Clone Repo** | Run: `git clone https://github.com/FaydevOps/MediaFlow-Utility-Pro` |
-| **Windows** | **1.** Download binaries from [FFmpeg Official Site](https://ffmpeg.org/download.html).<br>**2.** Extract to an accessible location (e.g., `C:\ffmpeg`).<br>**3. Crucial:** Add the `C:\ffmpeg\bin` folder to the Windows **PATH** environment variable. |
-| **Linux (Ubuntu/Debian)** | Run: `sudo apt update && sudo apt install ffmpeg python3 -y` |
-| **macOS** | Run (via Homebrew): `brew install ffmpeg python` |
-| **Termux (Android)** | Run: `pkg update && pkg install ffmpeg python -y` |
+| **Clone Repo** | `git clone https://github.com/FaydevOps/MediaFlow-Utility-Pro` |
+| **Windows** | Download binaries from [FFmpeg.org](https://ffmpeg.org/download.html), extract to `C:\ffmpeg` and add `C:\ffmpeg\bin` to the system **PATH**. |
+| **Linux (Debian/Ubuntu)** | `sudo apt update && sudo apt install ffmpeg python3 python3-pip python3-venv -y` |
+| **Linux (Arch)** | `sudo pacman -S ffmpeg python python-pip` |
+| **Linux (Fedora)** | `sudo dnf install ffmpeg python3 python3-pip python3-virtualenv` |
+| **macOS** | `brew install ffmpeg python` (requires Homebrew) |
+| **Termux (Android)** | `pkg update && pkg install ffmpeg python -y` |
 
----
+#### 2. Installing Python Dependencies and Virtual Environment
 
-#### 2. How to Run
+Inside the project folder:
 
-##### 🟢 Option A: Quick Start Scripts (Recommended)
+```bash
+# Create and activate virtual environment
+python3 -m venv venv
+source venv/bin/activate   # On Windows: .\venv\Scripts\activate
 
-The repository includes launchers that simplify startup across any operating system:
-
-* **Windows (10 / 11):**  
-  Double-click the `start.bat` file.
-* **Linux / macOS:**  
-  Grant execution permissions and run it from the terminal:
-  ```bash
-  chmod +x start.sh
-  ./start.sh
+# Install dependencies from requirements.txt
+pip install --upgrade pip
+pip install -r requirements.txt
