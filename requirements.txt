@@ -1,0 +1,6 @@
+yt-dlp
+Pillow
+browser-cookie3
+customtkinter
+requests
+rich
