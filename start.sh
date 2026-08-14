@@ -144,7 +144,7 @@ main() {
     # 7. Ejecutar la interfaz gráfica en segundo plano
     if [ -f "MultiDownloaderv2.0.py" ]; then
         echo -e "${GREEN}🚀 Abriendo MultiDownloaderv2.0...${NC}"
-        python3 MultiDownloaderv2.0.py > /dev/null 2>&1 &
+        python3  MultiDownloaderv.py > /dev/null 2>&1 &
         sleep 2
         echo -e "${GREEN}✅ Aplicación lanzada correctamente. Puedes cerrar esta terminal.${NC}"
     else
