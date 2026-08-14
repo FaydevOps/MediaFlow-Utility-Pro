@@ -5,6 +5,8 @@
   <a href="./README.md">🇪🇸 Español</a> | <a href="./README_EN.md">🇬🇧 English</a>
 </p>
 
+---
+
 ### Advanced Media Stream Manager
 
 Una aplicación de escritorio (GUI) desarrollada en **Python (CustomTkinter)** diseñada para gestionar, personalizar y adquirir flujos de medios utilizando la potencia del motor de código abierto **yt-dlp**.
@@ -16,7 +18,7 @@ Una aplicación de escritorio (GUI) desarrollada en **Python (CustomTkinter)** d
 ### 📸 Vista Previa de la Interfaz (GUI)
 
 <p align="center">
- <img width="845" height="929" alt="image" src="https://github.com/user-attachments/assets/31e7bddb-ad60-4777-b747-f4c13355ff8f" />
+  <img width="845" height="929" alt="image" src="https://github.com/user-attachments/assets/31e7bddb-ad60-4777-b747-f4c13355ff8f" />
 </p>
 
 ---
@@ -31,46 +33,45 @@ Una aplicación de escritorio (GUI) desarrollada en **Python (CustomTkinter)** d
 
 ---
 
-### ✨ Características Principales y Nuevas Funciones
+### ✨ Características Principales
 
 * **🎨 GUI Moderna e Intuitiva:** Desarrollada con **CustomTkinter** para una experiencia visual limpia, responsiva y adaptable.
-* **📋 Cola de Descargas Multilínea (Nuevo):** Agrega múltiples enlaces a la vez pegando una lista de URLs en el campo multilínea o importando un archivo de texto plano (`.txt`).
-* **🎵 Metadatos ID3 y Carátulas Automáticas (Nuevo):** Opción integrada para incrustar automáticamente la miniatura como carátula del archivo y los metadatos de la canción en descargas de audio.
-* **🔔 Notificaciones del Sistema (Nuevo):** Alerta nativa en el escritorio al completar las tareas de descarga de la cola.
-* **⚡ Gestión Avanzada con yt-dlp:** Soporte para resoluciones personalizadas (hasta 4K/2160p), conversión de contenedores (MP4, MKV, WebM, MP3, WAV, M4A) y gestión de listas de reproducción (*playlists*).
-* **🔒 Rotación y Gestión de Proxies:** Soporte para proxies HTTP/SOCKS5, carga mediante APIs públicas/personalizadas y prueba de latencia.
-* **🔑 Soporte de Autenticación:** Importación automática de *cookies* de sesión desde navegadores (Chrome, Firefox, Edge, Brave, Opera, Safari) para acceder a contenido privado de plataformas donde poseas una suscripción legítima.
-* **🚀 Lanzadores Automáticos Multiplataforma (Nuevo):** Incluye scripts de inicio rápido (`start.sh` y `start.bat`) que automatizan la verificación y ejecución del programa.
-* **📱 Modo Híbrido (CLI/GUI):** Detección automática del entorno; si se ejecuta en **Termux (Android)** o sin entorno gráfico, conmuta automáticamente al modo consola (CLI).
+* **📋 Cola de Descargas Multilínea:** Agrega múltiples enlaces a la vez pegando una lista de URLs o importando un archivo `.txt`.
+* **🎵 Metadatos ID3 y Carátulas Automáticas:** Opción integrada para incrustar automáticamente la miniatura como carátula y los metadatos en descargas de audio.
+* **🔔 Notificaciones del Sistema:** Alertas nativas al completar las descargas.
+* **⚡ Gestión Avanzada con yt-dlp:** Resoluciones hasta 4K, conversión de contenedores (MP4, MKV, WebM, MP3, WAV, M4A) y soporte para listas de reproducción.
+* **🔒 Rotación y Gestión de Proxies:** Soporte para HTTP/SOCKS5, carga mediante APIs y prueba de latencia.
+* **🔑 Autenticación con Cookies:** Importación automática desde navegadores para acceder a contenido privado con suscripción válida.
+* **🚀 Lanzadores Automáticos Multiplataforma:** Scripts `start.sh` y `start.bat` que verifican el entorno y lanzan la app.
+* **📱 Modo Híbrido (CLI/GUI):** Detecta automáticamente si se ejecuta en Termux (Android) o sin entorno gráfico y cambia a modo consola.
 
 ---
 
 ### 🚀 Requisitos e Instalación
 
-> **Requisito Obligatorio:** La herramienta requiere **FFmpeg** para procesar, extraer y fusionar flujos de audio y video de alta calidad.
+> **Requisito Obligatorio:** La herramienta requiere **FFmpeg** para procesar, extraer y fusionar flujos de audio y video.
 
-#### 1. Instalación de FFmpeg y Clonación
+#### 1. Instalación de FFmpeg y clonación del repositorio
 
-| Sistema | Método de Instalación |
+| Sistema | Comando / Método |
 | :--- | :--- |
-| **Clonar Repositorio** | Ejecute: `git clone https://github.com/FaydevOps/MediaFlow-Utility-Pro` |
-| **Windows** | **1.** Descargue los binarios desde [FFmpeg Official Site](https://ffmpeg.org/download.html).<br>**2.** Descomprima en una ubicación accesible (ej: `C:\ffmpeg`).<br>**3. Crucial:** Añada la carpeta `C:\ffmpeg\bin` a la variable de entorno **PATH** de Windows. |
-| **Linux (Ubuntu/Debian)** | Ejecute: `sudo apt update && sudo apt install ffmpeg python3 -y` |
-| **macOS** | Ejecute (vía Homebrew): `brew install ffmpeg python` |
-| **Termux (Android)** | Ejecute: `pkg update && pkg install ffmpeg python -y` |
+| **Clonar Repositorio** | `git clone https://github.com/FaydevOps/MediaFlow-Utility-Pro` |
+| **Windows** | Descarga binarios desde [FFmpeg.org](https://ffmpeg.org/download.html), extrae en `C:\ffmpeg` y añade `C:\ffmpeg\bin` al **PATH** del sistema. |
+| **Linux (Debian/Ubuntu)** | `sudo apt update && sudo apt install ffmpeg python3 python3-pip python3-venv -y` |
+| **Linux (Arch)** | `sudo pacman -S ffmpeg python python-pip` |
+| **Linux (Fedora)** | `sudo dnf install ffmpeg python3 python3-pip python3-virtualenv` |
+| **macOS** | `brew install ffmpeg python` (requiere Homebrew) |
+| **Termux (Android)** | `pkg update && pkg install ffmpeg python -y` |
 
----
+#### 2. Instalación de dependencias Python y entorno virtual
 
-#### 2. Formas de Ejecución
+Una vez dentro de la carpeta del proyecto:
 
-##### 🟢 Opción A: Scripts de Inicio Rápido (Recomendado)
+```bash
+# Crear y activar entorno virtual
+python3 -m venv venv
+source venv/bin/activate   # En Windows: .\venv\Scripts\activate
 
-El repositorio incluye ejecutable/lanzadores que simplifican el inicio en cualquier sistema operativo:
-
-* **Windows (10 / 11):**  
-  Haz doble clic sobre el archivo `start.bat`.
-* **Linux / macOS:**  
-  Otorga permisos de ejecución e inícialo desde la terminal:
-  ```bash
-  chmod +x start.sh
-  ./start.sh
+# Instalar dependencias desde requirements.txt
+pip install --upgrade pip
+pip install -r requirements.txt
