@@ -44,7 +44,7 @@ echo ===================================================
 echo.
 
 :: Ejecutar la GUI en segundo plano
-start "" pythonw MultiDownloaderv2.0.py
+start "" pythonw MultiDownloaderv.py
 
 timeout /t 2 >nul
 exit
