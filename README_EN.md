@@ -72,3 +72,18 @@ source venv/bin/activate   # On Windows: .\venv\Scripts\activate
 # Install dependencies from requirements.txt
 pip install --upgrade pip
 pip install -r requirements.txt
+```
+
+### 2. Execution Methods
+
+##### 🟢 Option A: Quick-Start Scripts (Recommended)
+
+The repository includes executables/launchers that simplify startup on any operating system:
+
+* **Windows (10 / 11):**  
+  Double-click the `start.bat` file.
+* **Linux / macOS:**  
+  Grant execution permissions and launch it from the terminal:
+  ```bash
+  chmod +x start.sh
+  ./start.sh
