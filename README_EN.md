@@ -15,7 +15,7 @@ A desktop application (GUI) developed in **Python (CustomTkinter)** designed to 
 ### 📸 Interface Preview (GUI)
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/4702e7e2-583c-401f-93e5-e6273dab76a9" alt="MediaFlow Utility Pro GUI" width="700"/>
+  <img width="1897" height="1011" alt="image" src="https://github.com/user-attachments/assets/fb40f455-3b6a-4a5e-990a-2f5dd9fa67c9" />
 </p>
 
 ---
