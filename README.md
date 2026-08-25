@@ -41,7 +41,7 @@ Una aplicación de escritorio (GUI) desarrollada en **Python (CustomTkinter)** d
 * **🔔 Notificaciones del Sistema:** Alertas nativas al completar las descargas.
 * **⚡ Gestión Avanzada con yt-dlp:** Resoluciones hasta 4K, conversión de contenedores (MP4, MKV, WebM, MP3, WAV, M4A) y soporte para listas de reproducción.
 * **🔒 Rotación y Gestión de Proxies:** Soporte para HTTP/SOCKS5, carga mediante APIs y prueba de latencia.
-* **🔑 Autenticación con Cookies:** Importación automática desde navegadores para acceder a contenido privado con suscripción válida.
+* **🔑 Autenticación con Cookies:** Importación manual desde navegadores para acceder a contenido privado con suscripción válida.
 * **🚀 Lanzadores Automáticos Multiplataforma:** Scripts `start.sh` y `start.bat` que verifican el entorno y lanzan la app.
 * **📱 Modo Híbrido (CLI/GUI):** Detecta automáticamente si se ejecuta en Termux (Android) o sin entorno gráfico y cambia a modo consola.
 
