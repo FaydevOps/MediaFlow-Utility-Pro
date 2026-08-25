@@ -104,6 +104,61 @@ def detect_installed_browsers():
                 break
     return browsers
 
+# ========== FUNCIONES PARA GESTIÓN DE COOKIES ==========
+
+def get_cookie_file_path():
+    """Obtiene la ruta del archivo de cookies"""
+    return os.path.join(get_base_path(), "cookies.txt")
+
+def get_cookie_token_file():
+    """Obtiene la ruta del archivo de tokens de sesión"""
+    return os.path.join(get_base_path(), "tokens.txt")
+
+def browser_has_dpapi_issue(browser_name):
+    """Chrome y Edge tienen problemas con DPAPI en Windows"""
+    return browser_name.lower() in ["chrome", "edge", "brave", "opera"]
+
+def load_cookie_tokens():
+    """Carga los tokens de sesión guardados"""
+    token_file = get_cookie_token_file()
+    if os.path.exists(token_file):
+        try:
+            with open(token_file, 'r') as f:
+                return f.read().strip().split('\n')
+        except:
+            pass
+    return []
+
+def save_cookie_tokens(tokens):
+    """Guarda los tokens de sesión"""
+    token_file = get_cookie_token_file()
+    try:
+        with open(token_file, 'w') as f:
+            f.write('\n'.join(tokens))
+        return True
+    except:
+        return False
+
+def validate_cookie_file(cookie_path):
+    """Valida que el archivo de cookies tenga el formato correcto"""
+    if not os.path.exists(cookie_path):
+        return False
+    try:
+        with open(cookie_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+            # Verificar que tenga el formato de cookies Netscape
+            if not content.startswith('# Netscape HTTP Cookie File'):
+                return False
+            # Verificar que tenga al menos una línea con formato de cookie
+            lines = [line.strip() for line in content.split('\n') if line.strip() and not line.startswith('#')]
+            for line in lines:
+                parts = line.split('\t')
+                if len(parts) >= 7:  # Formato Netscape: domain, flag, path, secure, expires, name, value
+                    return True
+        return False
+    except:
+        return False
+
 # ========== GESTIÓN DE PROXIES Y APIS CUSTOM ==========
 
 def load_proxy_list():
@@ -217,11 +272,20 @@ class MultiDownloaderGUI:
         self.proxy_type = ctk.StringVar(value="http")
         self.auto_retry_proxy = ctk.BooleanVar(value=True)
         self.auto_fetch_proxies = ctk.BooleanVar(value=True)
-        self.use_browser_cookies = ctk.BooleanVar(value=False)
+        
+        # Variables de cookies mejoradas
+        self.use_cookies = ctk.BooleanVar(value=False)
+        self.cookie_type = ctk.StringVar(value="archivo")  # "archivo", "navegador", "token"
+        self.selected_browser = ctk.StringVar(value="ninguno")
         self.embed_metadata = ctk.BooleanVar(value=True)
         
         self.installed_browsers = detect_installed_browsers()
-        self.selected_browser = ctk.StringVar(value=self.installed_browsers[0] if self.installed_browsers else "ninguno")
+        if self.installed_browsers:
+            self.selected_browser.set(self.installed_browsers[0])
+        
+        # Verificar si existen cookies guardadas
+        self.has_cookie_file = os.path.exists(get_cookie_file_path())
+        self.has_token_file = os.path.exists(get_cookie_token_file())
 
         # --- CABECERA (HEADER CON LOGO) ---
         self.header_frame = ctk.CTkFrame(master, fg_color="transparent")
@@ -373,17 +437,55 @@ class MultiDownloaderGUI:
     def build_advanced_card(self):
         card = self.build_card("🛡️ Red y Autenticación")
 
-        # Cookies
-        cook_frame = ctk.CTkFrame(card, fg_color="transparent")
-        cook_frame.pack(fill=ctk.X, pady=(0, 8))
+        # ===== SECCIÓN DE COOKIES MEJORADA =====
+        cookie_frame = ctk.CTkFrame(card, fg_color="transparent")
+        cookie_frame.pack(fill=ctk.X, pady=(0, 8))
         
-        ctk.CTkCheckBox(cook_frame, text="Usar cookies del navegador:", variable=self.use_browser_cookies, command=self.on_cookie_toggle, font=ctk.CTkFont(size=11)).pack(side=ctk.LEFT)
-        if self.installed_browsers:
-            ctk.CTkOptionMenu(cook_frame, variable=self.selected_browser, values=self.installed_browsers, width=120, height=24).pack(side=ctk.LEFT, padx=10)
-        
-        ctk.CTkButton(cook_frame, text="🔄 Detectar Navegadores", command=self.refresh_browsers, width=130, height=24, fg_color=CARD_BORDER, font=ctk.CTkFont(size=11)).pack(side=ctk.RIGHT)
+        # Checkbox principal de cookies
+        ctk.CTkCheckBox(
+            cookie_frame, 
+            text="🔐 Usar autenticación (cookies/tokens)", 
+            variable=self.use_cookies, 
+            command=self.on_cookie_toggle,
+            font=ctk.CTkFont(size=11)
+        ).pack(anchor="w")
 
-        # Separador interno
+        # Sub-frame para opciones de cookies
+        self.cookie_options_frame = ctk.CTkFrame(card, fg_color="transparent")
+        self.cookie_options_frame.pack(fill=ctk.X, padx=20, pady=(5, 0))
+        
+        # Método de autenticación
+        method_frame = ctk.CTkFrame(self.cookie_options_frame, fg_color="transparent")
+        method_frame.pack(fill=ctk.X, pady=2)
+        
+        ctk.CTkLabel(method_frame, text="Método:", font=ctk.CTkFont(size=11), text_color=TEXT_MUTED).pack(side=ctk.LEFT, padx=(0, 10))
+        
+        ctk.CTkOptionMenu(
+            method_frame, 
+            variable=self.cookie_type,
+            values=["archivo", "navegador", "token"],
+            width=120,
+            command=self.on_cookie_type_change
+        ).pack(side=ctk.LEFT)
+
+        # Botones según método
+        self.method_buttons_frame = ctk.CTkFrame(self.cookie_options_frame, fg_color="transparent")
+        self.method_buttons_frame.pack(fill=ctk.X, pady=5)
+        
+        self.update_cookie_buttons()
+
+        # Información de estado
+        self.cookie_status_label = ctk.CTkLabel(
+            self.cookie_options_frame, 
+            text="", 
+            font=ctk.CTkFont(size=10),
+            text_color=TEXT_MUTED
+        )
+        self.cookie_status_label.pack(anchor="w", pady=(2, 0))
+        
+        self.update_cookie_status()
+        
+        # Separador
         ctk.CTkFrame(card, height=1, fg_color=CARD_BORDER).pack(fill=ctk.X, pady=8)
 
         # Proxies
@@ -400,6 +502,214 @@ class MultiDownloaderGUI:
         ctk.CTkButton(proxy_btns, text="Gestionar", command=self.manage_proxies, width=80, height=26, fg_color=CARD_BORDER).pack(side=ctk.LEFT, padx=2)
         ctk.CTkButton(proxy_btns, text="APIs", command=self.manage_custom_apis, width=80, height=26, fg_color=ACCENT_ORANGE).pack(side=ctk.LEFT, padx=2)
         ctk.CTkButton(proxy_btns, text="Probar", command=self.test_proxies, width=80, height=26, fg_color=CARD_BORDER).pack(side=ctk.LEFT, padx=2)
+
+    def update_cookie_buttons(self):
+        """Actualiza los botones según el método seleccionado"""
+        # Limpiar frame
+        for widget in self.method_buttons_frame.winfo_children():
+            widget.destroy()
+            
+        method = self.cookie_type.get()
+        
+        if method == "archivo":
+            ctk.CTkButton(
+                self.method_buttons_frame, 
+                text="📂 Seleccionar cookies.txt", 
+                command=self.select_cookie_file,
+                width=180, height=26, fg_color=ACCENT_ORANGE
+            ).pack(side=ctk.LEFT, padx=2)
+            
+            ctk.CTkButton(
+                self.method_buttons_frame, 
+                text="📋 Ayuda", 
+                command=self.show_cookie_help,
+                width=100, height=26, fg_color=CARD_BORDER
+            ).pack(side=ctk.LEFT, padx=2)
+            
+        elif method == "navegador":
+            browser_values = self.installed_browsers if self.installed_browsers else ["ninguno"]
+            ctk.CTkOptionMenu(
+                self.method_buttons_frame,
+                variable=self.selected_browser,
+                values=browser_values,
+                width=120, height=26
+            ).pack(side=ctk.LEFT, padx=2)
+            
+            ctk.CTkButton(
+                self.method_buttons_frame, 
+                text="🔄 Detectar", 
+                command=self.refresh_browsers,
+                width=100, height=26, fg_color=CARD_BORDER
+            ).pack(side=ctk.LEFT, padx=2)
+            
+            if self.installed_browsers and browser_has_dpapi_issue(self.installed_browsers[0]):
+                ctk.CTkLabel(
+                    self.method_buttons_frame,
+                    text="⚠️ Chrome/Edge pueden fallar. Usa Firefox o archivo.",
+                    font=ctk.CTkFont(size=10),
+                    text_color="#EF4444"
+                ).pack(side=ctk.LEFT, padx=5)
+                
+        elif method == "token":
+            token_status = "✅ Tokens guardados" if self.has_token_file else "❌ Sin tokens"
+            ctk.CTkLabel(
+                self.method_buttons_frame,
+                text=token_status,
+                font=ctk.CTkFont(size=11)
+            ).pack(side=ctk.LEFT, padx=2)
+            
+            ctk.CTkButton(
+                self.method_buttons_frame, 
+                text="🔑 Importar tokens", 
+                command=self.import_tokens,
+                width=140, height=26, fg_color=ACCENT_GREEN
+            ).pack(side=ctk.LEFT, padx=2)
+            
+            ctk.CTkButton(
+                self.method_buttons_frame, 
+                text="📋 Ver", 
+                command=self.view_tokens,
+                width=100, height=26, fg_color=CARD_BORDER
+            ).pack(side=ctk.LEFT, padx=2)
+
+    def update_cookie_status(self):
+        """Actualiza el estado de las cookies"""
+        status_text = ""
+        method = self.cookie_type.get()
+        
+        if method == "archivo":
+            if self.has_cookie_file and validate_cookie_file(get_cookie_file_path()):
+                status_text = "✅ cookies.txt válido"
+            else:
+                status_text = "❌ No hay cookies.txt válido. Selecciona uno."
+        elif method == "navegador":
+            if self.installed_browsers:
+                status_text = f"✅ Navegadores: {', '.join(self.installed_browsers)}"
+            else:
+                status_text = "❌ No hay navegadores detectados"
+        elif method == "token":
+            tokens = load_cookie_tokens()
+            status_text = f"✅ {len(tokens)} tokens guardados" if tokens else "❌ Sin tokens"
+                
+        self.cookie_status_label.configure(text=status_text)
+
+    def on_cookie_toggle(self):
+        """Maneja el toggle de cookies"""
+        if self.use_cookies.get():
+            self.cookie_options_frame.configure(fg_color=CARD_BG)
+            self.update_cookie_buttons()
+            self.update_cookie_status()
+        else:
+            self.cookie_options_frame.configure(fg_color="transparent")
+            self.cookie_status_label.configure(text="Autenticación desactivada")
+
+    def on_cookie_type_change(self, choice):
+        """Maneja el cambio de método de cookies"""
+        self.update_cookie_buttons()
+        self.update_cookie_status()
+
+    def select_cookie_file(self):
+        """Selecciona un archivo de cookies"""
+        filepath = filedialog.askopenfilename(
+            title="Seleccionar archivo de cookies",
+            filetypes=[("Cookies files", "*.txt"), ("All files", "*.*")]
+        )
+        if filepath:
+            dest_path = get_cookie_file_path()
+            try:
+                shutil.copy2(filepath, dest_path)
+                self.has_cookie_file = True
+                self.update_cookie_status()
+                MessageBox.showinfo("Éxito", f"Cookies guardadas en:\n{dest_path}")
+            except Exception as e:
+                MessageBox.showerror("Error", f"No se pudo copiar:\n{e}")
+    
+    def show_cookie_help(self):
+        """Muestra ayuda sobre el formato de cookies"""
+        help_text = """📖 FORMATO COOKIES.TXT
+
+El archivo debe estar en formato Netscape:
+
+# Netscape HTTP Cookie File
+.youtube.com\tTRUE\t/\tFALSE\t1234567890\tVISITOR_INFO1_LIVE\tvalor...
+.youtube.com\tTRUE\t/\tFALSE\t1234567890\tCONSENT\tvalor...
+
+📌 CÓMO EXPORTAR:
+
+1. Instala "Get cookies.txt LOCALLY" en Chrome
+   https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc
+
+2. Ve a YouTube, haz clic en la extensión
+
+3. Haz clic en "Export" y guarda como cookies.txt
+
+4. Selecciona el archivo con el botón "Seleccionar cookies.txt"
+
+✅ FORMATO VÁLIDO:
+- Columnas separadas por TAB
+- Encabezado # Netscape HTTP Cookie File
+- Líneas con: dominio, flag, ruta, seguro, expiración, nombre, valor
+"""
+        MessageBox.showinfo("Formato de Cookies", help_text)
+
+    def import_tokens(self):
+        """Importa tokens de sesión"""
+        token_win = ctk.CTkToplevel(self.master)
+        token_win.title("Importar Tokens")
+        token_win.geometry("450x300")
+        token_win.grab_set()
+        
+        ctk.CTkLabel(
+            token_win, 
+            text="🔑 Tokens de Sesión", 
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).pack(pady=10)
+        
+        ctk.CTkLabel(
+            token_win,
+            text="Ingresa un token por línea (ej: ya29.a0AfB...):",
+            font=ctk.CTkFont(size=11),
+            text_color=TEXT_MUTED
+        ).pack(pady=5)
+        
+        token_text = ctk.CTkTextbox(token_win, height=120)
+        token_text.pack(fill=ctk.BOTH, padx=20, pady=10, expand=True)
+        
+        if self.has_token_file:
+            tokens = load_cookie_tokens()
+            token_text.insert("1.0", "\n".join(tokens))
+        
+        def save_tokens():
+            content = token_text.get("1.0", "end-1c").strip()
+            tokens = [t.strip() for t in content.split('\n') if t.strip()]
+            if save_cookie_tokens(tokens):
+                self.has_token_file = True
+                self.update_cookie_status()
+                MessageBox.showinfo("Éxito", f"{len(tokens)} tokens guardados")
+                token_win.destroy()
+            else:
+                MessageBox.showerror("Error", "No se pudieron guardar los tokens")
+        
+        ctk.CTkButton(
+            token_win, 
+            text="💾 Guardar Tokens", 
+            command=save_tokens,
+            fg_color=ACCENT_GREEN
+        ).pack(pady=10)
+    
+    def view_tokens(self):
+        """Muestra los tokens guardados"""
+        if not self.has_token_file:
+            MessageBox.showwarning("Sin tokens", "No hay tokens guardados")
+            return
+            
+        tokens = load_cookie_tokens()
+        if not tokens:
+            MessageBox.showinfo("Tokens vacíos", "El archivo de tokens está vacío")
+            return
+            
+        token_text = "\n".join([f"• {token[:30]}..." for token in tokens])
+        MessageBox.showinfo("Tokens Guardados", f"Tokens ({len(tokens)}):\n\n{token_text}")
 
     def build_footer_actions(self, master):
         footer = ctk.CTkFrame(master, fg_color=CARD_BG, corner_radius=0, border_color=CARD_BORDER, border_width=1)
@@ -465,11 +775,6 @@ class MultiDownloaderGUI:
         donate_text = "¡Gracias por usar Multi Downloader Pro!\n\nPayPal: https://www.paypal.me/faycraxE\n\nTu apoyo ayuda a mantener el proyecto actualizado."
         MessageBox.showinfo("Donar", donate_text)
 
-    def on_cookie_toggle(self):
-        if self.use_browser_cookies.get() and not self.installed_browsers:
-            MessageBox.showwarning("Sin navegadores", "No se detectaron navegadores instalados en el sistema.")
-            self.use_browser_cookies.set(False)
-
     def refresh_browsers(self):
         self.status_label.configure(text="🔍 Buscando navegadores...")
         self.installed_browsers = detect_installed_browsers()
@@ -480,6 +785,8 @@ class MultiDownloaderGUI:
         else:
             MessageBox.showwarning("Sin resultados", "No se encontraron navegadores compatibles.")
             self.status_label.configure(text="❌ No se detectaron navegadores")
+        self.update_cookie_status()
+        self.update_cookie_buttons()
 
     def browse_directory(self):
         directory = filedialog.askdirectory()
@@ -609,8 +916,47 @@ class MultiDownloaderGUI:
                 if self.ffmpeg_custom_path.get() and os.path.exists(self.ffmpeg_custom_path.get()):
                     ydl_opts['ffmpeg_location'] = self.ffmpeg_custom_path.get()
 
-                if self.use_browser_cookies.get() and self.selected_browser.get() != "ninguno":
-                    ydl_opts['cookiesfrombrowser'] = (self.selected_browser.get(),)
+                # ========== CONFIGURACIÓN DE COOKIES MEJORADA ==========
+                if self.use_cookies.get():
+                    method = self.cookie_type.get()
+                    
+                    if method == "archivo":
+                        # Usar archivo cookies.txt
+                        cookie_file = get_cookie_file_path()
+                        if os.path.exists(cookie_file) and validate_cookie_file(cookie_file):
+                            ydl_opts['cookiefile'] = cookie_file
+                            self.status_label.configure(text="🍪 Usando cookies desde archivo")
+                        else:
+                            self.status_label.configure(text="⚠️ cookies.txt no válido")
+                            
+                    elif method == "navegador":
+                        # Usar cookies del navegador
+                        browser = self.selected_browser.get()
+                        if browser != "ninguno":
+                            try:
+                                if browser_has_dpapi_issue(browser):
+                                    self.status_label.configure(
+                                        text=f"⚠️ {browser.title()} con DPAPI. Si falla, usa archivo"
+                                    )
+                                ydl_opts['cookiesfrombrowser'] = (browser,)
+                                self.status_label.configure(text=f"🔄 Usando cookies de {browser.title()}")
+                            except Exception as e:
+                                self.status_label.configure(text=f"❌ Error con {browser}: {str(e)[:40]}")
+                        else:
+                            self.status_label.configure(text="⚠️ Sin navegador seleccionado")
+                            
+                    elif method == "token":
+                        # Usar tokens de sesión
+                        tokens = load_cookie_tokens()
+                        if tokens:
+                            # yt-dlp no soporta tokens directamente, pero podemos agregar como header
+                            # Esto es para casos específicos, normalmente no se usa
+                            ydl_opts['headers'] = {
+                                'Authorization': f'Bearer {tokens[0]}'
+                            }
+                            self.status_label.configure(text="🔑 Usando token de sesión")
+                        else:
+                            self.status_label.configure(text="❌ Sin tokens guardados")
 
                 if self.use_proxy.get():
                     p_addr = get_random_proxy(self.proxy_type.get())
