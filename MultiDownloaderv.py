@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 import json
@@ -14,6 +15,8 @@ from tkinter import filedialog
 from PIL import Image, ImageTk 
 import customtkinter as ctk 
 from yt_dlp import YoutubeDL
+from yt_dlp.postprocessor.common import PostProcessor
+from yt_dlp.utils import DownloadCancelled, remove_terminal_sequences
 
 # Intento de importar win10toast para notificaciones nativas en Windows
 try:
@@ -50,7 +53,7 @@ def get_base_path():
     if getattr(sys, 'frozen', False):
         return os.path.dirname(sys.executable)
     else:
-        return os.path.dirname(__file__)
+        return os.path.dirname(os.path.abspath(__file__))
 
 def get_random_user_agent():
     user_agents = [
@@ -110,34 +113,9 @@ def get_cookie_file_path():
     """Obtiene la ruta del archivo de cookies"""
     return os.path.join(get_base_path(), "cookies.txt")
 
-def get_cookie_token_file():
-    """Obtiene la ruta del archivo de tokens de sesión"""
-    return os.path.join(get_base_path(), "tokens.txt")
-
 def browser_has_dpapi_issue(browser_name):
     """Chrome y Edge tienen problemas con DPAPI en Windows"""
     return browser_name.lower() in ["chrome", "edge", "brave", "opera"]
-
-def load_cookie_tokens():
-    """Carga los tokens de sesión guardados"""
-    token_file = get_cookie_token_file()
-    if os.path.exists(token_file):
-        try:
-            with open(token_file, 'r') as f:
-                return f.read().strip().split('\n')
-        except:
-            pass
-    return []
-
-def save_cookie_tokens(tokens):
-    """Guarda los tokens de sesión"""
-    token_file = get_cookie_token_file()
-    try:
-        with open(token_file, 'w') as f:
-            f.write('\n'.join(tokens))
-        return True
-    except:
-        return False
 
 def validate_cookie_file(cookie_path):
     """Valida que el archivo de cookies tenga el formato correcto"""
@@ -242,30 +220,138 @@ def get_random_proxy(proxy_type='http'):
     return None
 
 def test_proxy(proxy, proxy_type='http'):
+    # Se usa la capa de red de yt-dlp porque urllib no soporta SOCKS
     try:
-        handler = urllib.request.ProxyHandler({'http': f'{proxy_type}://{proxy}', 'https': f'{proxy_type}://{proxy}'})
-        opener = urllib.request.build_opener(handler)
-        opener.addheaders = [('User-Agent', get_random_user_agent())]
-        response = opener.open('http://httpbin.org/ip', timeout=8)
-        return response.getcode() == 200
-    except:
+        opts = {'proxy': f'{proxy_type}://{proxy}', 'socket_timeout': 8, 'quiet': True,
+                'http_headers': {'User-Agent': get_random_user_agent()}}
+        with YoutubeDL(opts) as ydl:
+            return ydl.urlopen('http://httpbin.org/ip').status == 200
+    except Exception:
         return False
+
+# Contenedores donde yt-dlp puede incrustar carátula (wav y webm no lo soportan)
+THUMBNAIL_EXTS = {'mp3', 'm4a', 'mp4', 'mkv'}
+
+# "(Official Video)", "[Lyrics]", "(Video Oficial)", "(4K Remaster)"... al final de títulos de canciones
+_TITLE_JUNK = re.compile(
+    r'\s*[\(\[][^\)\]]*\b(official|oficial|video|v[ií]deo|audio|lyrics?|letra|visuali[sz]er|'
+    r'remaster(ed)?|hd|hq|4k|mv|videoclip|clip)\b[^\)\]]*[\)\]]', re.IGNORECASE)
+
+def music_tags(info, force=False):
+    """Artista y título limpios para canciones. Solo actúa si es música (categoría Music,
+    datos de pista del sitio) o si force=True (descarga de solo audio)."""
+    artist = info.get('artist') or ', '.join(info.get('artists') or [])
+    track = info.get('track')
+    if not (force or track or artist or 'Music' in (info.get('categories') or [])):
+        return {}
+    title = info.get('title') or ''
+    parsed = re.match(r'(.+?)\s+[-–—]\s+(.+)', title)  # "Artista - Canción"
+    if not artist:
+        channel = info.get('uploader') or info.get('channel') or ''
+        channel = re.sub(r'(\s*-\s*Topic|VEVO|\s+Official)$', '', channel, flags=re.IGNORECASE).strip()
+        artist = parsed.group(1).strip() if parsed else channel
+    if not track:
+        track = _TITLE_JUNK.sub('', parsed.group(2) if parsed else title).strip() or title
+    # Los campos meta_* tienen prioridad en FFmpegMetadata sobre los que genera yt-dlp
+    return {k: v for k, v in (('meta_title', track), ('meta_artist', artist)) if v}
+
+class MusicTagsPP(PostProcessor):
+    def __init__(self, force=False):
+        super().__init__()
+        self.force = force
+
+    def run(self, info):
+        info.update(music_tags(info, self.force))
+        return [], info
+
+def build_media_opts(v_res, v_fmt, a_fmt, embed_metadata):
+    """Opciones de yt-dlp (format, merge, postprocesadores) para que el archivo final
+    quede exactamente en el formato elegido. Sin formato elegido, solo añade metadatos."""
+    opts = {}
+    pps = []
+    if a_fmt != "none" and v_fmt == "none":
+        opts['format'] = 'bestaudio/best'
+        pps.append({'key': 'FFmpegExtractAudio', 'preferredcodec': a_fmt, 'preferredquality': '192'})
+        final_ext = a_fmt
+    elif v_fmt != "none":
+        h = '' if v_res in ("mejor", "none") else f'[height<={v_res.rstrip("p")}]'
+        # Primero streams nativos del contenedor (sin recodificar); mkv acepta cualquiera
+        a_ext = {'mp4': '[ext=m4a]', 'webm': '[ext=webm]'}.get(v_fmt, '')
+        opts['format'] = (f'bestvideo{h}[ext={v_fmt}]+bestaudio{a_ext}/best{h}[ext={v_fmt}]'
+                          f'/bestvideo{h}+bestaudio/best{h}/best')
+        if v_fmt == 'webm':
+            # webm solo admite VP8/VP9/AV1 + Opus/Vorbis: si el respaldo trae h264/aac hay que
+            # recodificar; se usa el modo rápido de libvpx (el modo por defecto es muy lento)
+            opts['merge_output_format'] = 'webm/mkv'
+            pps.append({'key': 'FFmpegVideoConvertor', 'preferedformat': 'webm'})
+            opts['postprocessor_args'] = {'videoconvertor': [
+                '-c:v', 'libvpx-vp9', '-deadline', 'realtime', '-cpu-used', '8', '-row-mt', '1',
+                '-b:v', '0', '-crf', '32', '-c:a', 'libopus']}
+        else:
+            # mp4/mkv admiten h264, vp9, av1, opus y aac: se copian los streams (remux),
+            # sin recodificar. yt-dlp omite el paso si el archivo ya está en el formato pedido
+            # shortcut: códecs muy antiguos (p. ej. Vorbis) no caben en mp4 y el remux falla; se reporta como error
+            opts['merge_output_format'] = v_fmt
+            pps.append({'key': 'FFmpegVideoRemuxer', 'preferedformat': v_fmt})
+        final_ext = v_fmt
+    else:
+        # Sin formato elegido el contenedor final no se conoce: solo metadatos, sin carátula
+        final_ext = None
+
+    if embed_metadata:
+        # Título, artista, fecha, género, descripción, URL y capítulos
+        pps.append({'key': 'FFmpegMetadata', 'add_metadata': True, 'add_chapters': True})
+        if final_ext in THUMBNAIL_EXTS:
+            # Las miniaturas webp no se incrustan bien en mp3/m4a: se pasan a jpg
+            pps.append({'key': 'FFmpegThumbnailsConvertor', 'format': 'jpg', 'when': 'before_dl'})
+            pps.append({'key': 'EmbedThumbnail'})
+            opts['writethumbnail'] = True
+            if final_ext in ('mp3', 'm4a'):
+                # Portada cuadrada (recorte centrado) como en los reproductores de música
+                opts.setdefault('postprocessor_args', {})['thumbnailsconvertor+ffmpeg_o'] = [
+                    '-vf', "crop='min(iw,ih)':'min(iw,ih)'", '-q:v', '2']
+
+    opts['postprocessors'] = pps
+    return opts
+
+
+def remove_partial_files(download_paths, thumb_paths):
+    """Tras cancelar, borra solo temporales: .part/.ytdl, streams sueltos antes de unir
+    ("titulo.f401.mp4") y la miniatura recién escrita. Nunca un archivo final, que yt-dlp
+    también reporta en el progreso si ya existía de antes."""
+    candidates = set(filter(None, thumb_paths))
+    for p in filter(None, download_paths):
+        candidates.update((p + '.part', p + '.ytdl'))
+        if p.endswith(('.part', '.ytdl')) or re.search(r'\.f[\w-]+\.\w+$', p):
+            candidates.add(p)
+    for p in candidates:
+        try:
+            if os.path.isfile(p):
+                os.remove(p)
+        except OSError:
+            pass
 
 
 # ========== CLASE PRINCIPAL DE INTERFAZ ==========
+
+# Texto del menú para "sin formato elegido" (internamente es "none")
+ORIGINAL = "Original"
 
 class MultiDownloaderGUI:
     def __init__(self, master):
         self.master = master
         master.title("Multi Downloader Pro v4.0")
-        master.geometry("850x900")
-        master.minsize(780, 750)
+        # Que quepa en pantallas de 768 px (el contenido central tiene scroll)
+        height = min(900, master.winfo_screenheight() - 80)
+        master.geometry(f"850x{height}")
+        master.minsize(780, min(750, height))
         self.master.configure(fg_color=BG_COLOR)
-        
+
         # Variables de estado
-        self.video_resolution = ctk.StringVar(value="none")
-        self.video_format = ctk.StringVar(value="none")
-        self.audio_format = ctk.StringVar(value="none")
+        self.video_resolution = ctk.StringVar(value="mejor")
+        self.video_format = ctk.StringVar(value=ORIGINAL)
+        self.audio_format = ctk.StringVar(value=ORIGINAL)
+        self.cancel_event = threading.Event()
         self.output_path = ctk.StringVar(value=os.path.expanduser("~/Downloads"))
         self.ffmpeg_custom_path = ctk.StringVar(value="") 
         self.use_proxy = ctk.BooleanVar(value=False)
@@ -275,7 +361,7 @@ class MultiDownloaderGUI:
         
         # Variables de cookies mejoradas
         self.use_cookies = ctk.BooleanVar(value=False)
-        self.cookie_type = ctk.StringVar(value="archivo")  # "archivo", "navegador", "token"
+        self.cookie_type = ctk.StringVar(value="archivo")  # "archivo", "navegador"
         self.selected_browser = ctk.StringVar(value="ninguno")
         self.embed_metadata = ctk.BooleanVar(value=True)
         
@@ -285,7 +371,6 @@ class MultiDownloaderGUI:
         
         # Verificar si existen cookies guardadas
         self.has_cookie_file = os.path.exists(get_cookie_file_path())
-        self.has_token_file = os.path.exists(get_cookie_token_file())
 
         # --- CABECERA (HEADER CON LOGO) ---
         self.header_frame = ctk.CTkFrame(master, fg_color="transparent")
@@ -360,6 +445,9 @@ class MultiDownloaderGUI:
         # --- BARRA INFERIOR (FOOTER / ACCIONES) ---
         self.build_footer_actions(master)
 
+        # Al ocultar el panel de cookies el scroll queda desplazado: empezar arriba
+        master.after(150, lambda: self.scroll_container._parent_canvas.yview_moveto(0))
+
     # ---------- MÉTODOS DE CONSTRUCCIÓN DE INTERFAZ ----------
 
     def build_card(self, title):
@@ -377,14 +465,20 @@ class MultiDownloaderGUI:
         sub_header = ctk.CTkFrame(card, fg_color="transparent")
         sub_header.pack(fill=ctk.X, pady=(0, 5))
         
-        ctk.CTkLabel(sub_header, text="Ingresa URLs (una por línea):", font=ctk.CTkFont(size=11), text_color=TEXT_MUTED).pack(side=ctk.LEFT)
-        ctk.CTkButton(
-            sub_header, text="📂 Importar .txt", command=self.load_txt_file, 
-            width=110, height=24, fg_color=CARD_BORDER, hover_color="#475569", font=ctk.CTkFont(size=11)
-        ).pack(side=ctk.RIGHT)
+        ctk.CTkLabel(sub_header, text="Pega las URLs (una por línea):", font=ctk.CTkFont(size=11), text_color=TEXT_MUTED).pack(side=ctk.LEFT)
+        self.url_count_label = ctk.CTkLabel(sub_header, text="", font=ctk.CTkFont(size=11, weight="bold"), text_color=ACCENT_BLUE)
+        self.url_count_label.pack(side=ctk.LEFT, padx=8)
 
-        self.url_textbox = ctk.CTkTextbox(card, height=90, corner_radius=8, font=('Consolas', 11))
+        small = dict(height=24, fg_color=CARD_BORDER, hover_color="#475569", font=ctk.CTkFont(size=11))
+        ctk.CTkButton(sub_header, text="📂 Importar .txt", command=self.load_txt_file, width=110, **small).pack(side=ctk.RIGHT)
+        ctk.CTkButton(sub_header, text="🗑 Limpiar", command=self.clear_urls, width=80, **small).pack(side=ctk.RIGHT, padx=4)
+        ctk.CTkButton(sub_header, text="📋 Pegar", command=self.paste_urls, width=80, **small).pack(side=ctk.RIGHT)
+
+        self.url_textbox = ctk.CTkTextbox(card, height=110, corner_radius=8, font=('Consolas', 11),
+                                          fg_color=BG_COLOR, border_color=CARD_BORDER, border_width=1)
         self.url_textbox.pack(fill=ctk.X)
+        self.url_textbox.bind("<KeyRelease>", lambda _: self.update_url_count())
+        self.update_url_count()
 
     def build_paths_card(self):
         card = self.build_card("📁 Ubicaciones y Herramientas")
@@ -401,8 +495,41 @@ class MultiDownloaderGUI:
         row2 = ctk.CTkFrame(card, fg_color="transparent")
         row2.pack(fill=ctk.X, pady=4)
         ctk.CTkLabel(row2, text="FFmpeg:", width=80, anchor="w", font=ctk.CTkFont(size=11)).pack(side=ctk.LEFT)
-        ctk.CTkEntry(row2, textvariable=self.ffmpeg_custom_path, state='readonly', placeholder_text="Opcional (para conversiones avanzadas)").pack(side=ctk.LEFT, fill=ctk.X, expand=True, padx=5)
+        ctk.CTkEntry(row2, textvariable=self.ffmpeg_custom_path, state='readonly').pack(side=ctk.LEFT, fill=ctk.X, expand=True, padx=5)
         ctk.CTkButton(row2, text="Seleccionar", command=self.browse_ffmpeg_path, width=80, fg_color=CARD_BORDER).pack(side=ctk.LEFT, padx=2)
+
+        self.ffmpeg_status_label = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=10), anchor="w")
+        self.ffmpeg_status_label.pack(fill=ctk.X, padx=(85, 0))
+        self.update_ffmpeg_status()
+
+    def update_ffmpeg_status(self):
+        """FFmpeg es necesario para unir audio+video, convertir y añadir metadatos"""
+        custom = self.ffmpeg_custom_path.get()
+        if custom and os.path.exists(custom):
+            text, color = "✅ Usando el FFmpeg seleccionado", ACCENT_GREEN
+        elif shutil.which("ffmpeg"):
+            text, color = "✅ FFmpeg detectado en el sistema (opcional elegir otro)", ACCENT_GREEN
+        else:
+            text, color = "⚠️ FFmpeg no encontrado: sin él no se pueden convertir formatos ni añadir metadatos", ACCENT_ORANGE
+        self.ffmpeg_status_label.configure(text=text, text_color=color)
+
+    def update_url_count(self):
+        n = len(self.get_urls_from_textbox())
+        self.url_count_label.configure(text=f"{n} URL{'s' if n != 1 else ''} en cola" if n else "")
+
+    def paste_urls(self):
+        try:
+            text = self.master.clipboard_get().strip()
+        except tk.TclError:
+            return  # portapapeles vacío o sin texto
+        if text:
+            current = self.url_textbox.get("1.0", "end-1c")
+            self.url_textbox.insert("end", ("\n" if current.strip() else "") + text)
+            self.update_url_count()
+
+    def clear_urls(self):
+        self.url_textbox.delete("1.0", "end")
+        self.update_url_count()
 
     def build_options_card(self):
         card = self.build_card("⚙️ Formato y Calidad")
@@ -415,22 +542,22 @@ class MultiDownloaderGUI:
         f1 = ctk.CTkFrame(opts_frame, fg_color="transparent")
         f1.grid(row=0, column=0, sticky="ew", padx=5)
         ctk.CTkLabel(f1, text="Resolución Video", font=ctk.CTkFont(size=11), text_color=TEXT_MUTED).pack(anchor="w")
-        ctk.CTkOptionMenu(f1, variable=self.video_resolution, values=["none", "mejor", "2160p", "1440p", "1080p", "720p", "480p"]).pack(fill=ctk.X, pady=2)
+        ctk.CTkOptionMenu(f1, variable=self.video_resolution, values=["mejor", "2160p", "1440p", "1080p", "720p", "480p"]).pack(fill=ctk.X, pady=2)
 
         # Formato Video
         f2 = ctk.CTkFrame(opts_frame, fg_color="transparent")
         f2.grid(row=0, column=1, sticky="ew", padx=5)
         ctk.CTkLabel(f2, text="Formato Video", font=ctk.CTkFont(size=11), text_color=TEXT_MUTED).pack(anchor="w")
-        ctk.CTkOptionMenu(f2, variable=self.video_format, values=["none", "mp4", "webm", "mkv"]).pack(fill=ctk.X, pady=2)
+        ctk.CTkOptionMenu(f2, variable=self.video_format, values=[ORIGINAL, "mp4", "webm", "mkv"]).pack(fill=ctk.X, pady=2)
 
         # Formato Audio
         f3 = ctk.CTkFrame(opts_frame, fg_color="transparent")
         f3.grid(row=0, column=2, sticky="ew", padx=5)
         ctk.CTkLabel(f3, text="Formato Audio", font=ctk.CTkFont(size=11), text_color=TEXT_MUTED).pack(anchor="w")
-        ctk.CTkOptionMenu(f3, variable=self.audio_format, values=["none", "mp3", "wav", "m4a"]).pack(fill=ctk.X, pady=2)
+        ctk.CTkOptionMenu(f3, variable=self.audio_format, values=[ORIGINAL, "mp3", "wav", "m4a"]).pack(fill=ctk.X, pady=2)
 
         ctk.CTkCheckBox(
-            card, text="Incrustar carátula y metadatos ID3 en descargas de audio", 
+            card, text="Incrustar carátula y metadatos (título, artista, capítulos) en audio y video",
             variable=self.embed_metadata, font=ctk.CTkFont(size=11)
         ).pack(anchor="w", pady=(10, 0))
 
@@ -438,13 +565,13 @@ class MultiDownloaderGUI:
         card = self.build_card("🛡️ Red y Autenticación")
 
         # ===== SECCIÓN DE COOKIES MEJORADA =====
-        cookie_frame = ctk.CTkFrame(card, fg_color="transparent")
-        cookie_frame.pack(fill=ctk.X, pady=(0, 8))
-        
+        self.cookie_frame = ctk.CTkFrame(card, fg_color="transparent")
+        self.cookie_frame.pack(fill=ctk.X, pady=(0, 8))
+
         # Checkbox principal de cookies
         ctk.CTkCheckBox(
-            cookie_frame, 
-            text="🔐 Usar autenticación (cookies/tokens)", 
+            self.cookie_frame,
+            text="🔐 Usar autenticación (cookies)", 
             variable=self.use_cookies, 
             command=self.on_cookie_toggle,
             font=ctk.CTkFont(size=11)
@@ -463,7 +590,7 @@ class MultiDownloaderGUI:
         ctk.CTkOptionMenu(
             method_frame, 
             variable=self.cookie_type,
-            values=["archivo", "navegador", "token"],
+            values=["archivo", "navegador"],
             width=120,
             command=self.on_cookie_type_change
         ).pack(side=ctk.LEFT)
@@ -484,7 +611,8 @@ class MultiDownloaderGUI:
         self.cookie_status_label.pack(anchor="w", pady=(2, 0))
         
         self.update_cookie_status()
-        
+        self.on_cookie_toggle()  # oculto mientras la autenticación esté desactivada
+
         # Separador
         ctk.CTkFrame(card, height=1, fg_color=CARD_BORDER).pack(fill=ctk.X, pady=8)
 
@@ -532,45 +660,30 @@ class MultiDownloaderGUI:
                 self.method_buttons_frame,
                 variable=self.selected_browser,
                 values=browser_values,
-                width=120, height=26
+                width=120, height=26,
+                command=lambda _: self.update_dpapi_warning()
             ).pack(side=ctk.LEFT, padx=2)
-            
+
             ctk.CTkButton(
-                self.method_buttons_frame, 
-                text="🔄 Detectar", 
+                self.method_buttons_frame,
+                text="🔄 Detectar",
                 command=self.refresh_browsers,
                 width=100, height=26, fg_color=CARD_BORDER
             ).pack(side=ctk.LEFT, padx=2)
-            
-            if self.installed_browsers and browser_has_dpapi_issue(self.installed_browsers[0]):
-                ctk.CTkLabel(
-                    self.method_buttons_frame,
-                    text="⚠️ Chrome/Edge pueden fallar. Usa Firefox o archivo.",
-                    font=ctk.CTkFont(size=10),
-                    text_color="#EF4444"
-                ).pack(side=ctk.LEFT, padx=5)
-                
-        elif method == "token":
-            token_status = "✅ Tokens guardados" if self.has_token_file else "❌ Sin tokens"
-            ctk.CTkLabel(
+
+            self.dpapi_label = ctk.CTkLabel(
                 self.method_buttons_frame,
-                text=token_status,
-                font=ctk.CTkFont(size=11)
-            ).pack(side=ctk.LEFT, padx=2)
-            
-            ctk.CTkButton(
-                self.method_buttons_frame, 
-                text="🔑 Importar tokens", 
-                command=self.import_tokens,
-                width=140, height=26, fg_color=ACCENT_GREEN
-            ).pack(side=ctk.LEFT, padx=2)
-            
-            ctk.CTkButton(
-                self.method_buttons_frame, 
-                text="📋 Ver", 
-                command=self.view_tokens,
-                width=100, height=26, fg_color=CARD_BORDER
-            ).pack(side=ctk.LEFT, padx=2)
+                text="",
+                font=ctk.CTkFont(size=10),
+                text_color="#EF4444"
+            )
+            self.dpapi_label.pack(side=ctk.LEFT, padx=5)
+            self.update_dpapi_warning()
+
+    def update_dpapi_warning(self):
+        """Muestra el aviso DPAPI según el navegador seleccionado"""
+        risky = browser_has_dpapi_issue(self.selected_browser.get())
+        self.dpapi_label.configure(text="⚠️ Chrome/Edge pueden fallar. Usa Firefox o archivo." if risky else "")
 
     def update_cookie_status(self):
         """Actualiza el estado de las cookies"""
@@ -587,21 +700,17 @@ class MultiDownloaderGUI:
                 status_text = f"✅ Navegadores: {', '.join(self.installed_browsers)}"
             else:
                 status_text = "❌ No hay navegadores detectados"
-        elif method == "token":
-            tokens = load_cookie_tokens()
-            status_text = f"✅ {len(tokens)} tokens guardados" if tokens else "❌ Sin tokens"
-                
+
         self.cookie_status_label.configure(text=status_text)
 
     def on_cookie_toggle(self):
-        """Maneja el toggle de cookies"""
+        """Muestra las opciones de cookies solo cuando la autenticación está activada"""
         if self.use_cookies.get():
-            self.cookie_options_frame.configure(fg_color=CARD_BG)
+            self.cookie_options_frame.pack(fill=ctk.X, padx=20, pady=(0, 4), after=self.cookie_frame)
             self.update_cookie_buttons()
             self.update_cookie_status()
         else:
-            self.cookie_options_frame.configure(fg_color="transparent")
-            self.cookie_status_label.configure(text="Autenticación desactivada")
+            self.cookie_options_frame.pack_forget()
 
     def on_cookie_type_change(self, choice):
         """Maneja el cambio de método de cookies"""
@@ -652,65 +761,6 @@ El archivo debe estar en formato Netscape:
 """
         MessageBox.showinfo("Formato de Cookies", help_text)
 
-    def import_tokens(self):
-        """Importa tokens de sesión"""
-        token_win = ctk.CTkToplevel(self.master)
-        token_win.title("Importar Tokens")
-        token_win.geometry("450x300")
-        token_win.grab_set()
-        
-        ctk.CTkLabel(
-            token_win, 
-            text="🔑 Tokens de Sesión", 
-            font=ctk.CTkFont(size=14, weight="bold")
-        ).pack(pady=10)
-        
-        ctk.CTkLabel(
-            token_win,
-            text="Ingresa un token por línea (ej: ya29.a0AfB...):",
-            font=ctk.CTkFont(size=11),
-            text_color=TEXT_MUTED
-        ).pack(pady=5)
-        
-        token_text = ctk.CTkTextbox(token_win, height=120)
-        token_text.pack(fill=ctk.BOTH, padx=20, pady=10, expand=True)
-        
-        if self.has_token_file:
-            tokens = load_cookie_tokens()
-            token_text.insert("1.0", "\n".join(tokens))
-        
-        def save_tokens():
-            content = token_text.get("1.0", "end-1c").strip()
-            tokens = [t.strip() for t in content.split('\n') if t.strip()]
-            if save_cookie_tokens(tokens):
-                self.has_token_file = True
-                self.update_cookie_status()
-                MessageBox.showinfo("Éxito", f"{len(tokens)} tokens guardados")
-                token_win.destroy()
-            else:
-                MessageBox.showerror("Error", "No se pudieron guardar los tokens")
-        
-        ctk.CTkButton(
-            token_win, 
-            text="💾 Guardar Tokens", 
-            command=save_tokens,
-            fg_color=ACCENT_GREEN
-        ).pack(pady=10)
-    
-    def view_tokens(self):
-        """Muestra los tokens guardados"""
-        if not self.has_token_file:
-            MessageBox.showwarning("Sin tokens", "No hay tokens guardados")
-            return
-            
-        tokens = load_cookie_tokens()
-        if not tokens:
-            MessageBox.showinfo("Tokens vacíos", "El archivo de tokens está vacío")
-            return
-            
-        token_text = "\n".join([f"• {token[:30]}..." for token in tokens])
-        MessageBox.showinfo("Tokens Guardados", f"Tokens ({len(tokens)}):\n\n{token_text}")
-
     def build_footer_actions(self, master):
         footer = ctk.CTkFrame(master, fg_color=CARD_BG, corner_radius=0, border_color=CARD_BORDER, border_width=1)
         footer.pack(fill=ctk.X, side=ctk.BOTTOM)
@@ -719,8 +769,12 @@ El archivo debe estar en formato Netscape:
         status_container = ctk.CTkFrame(footer, fg_color="transparent")
         status_container.pack(fill=ctk.X, padx=20, pady=(10, 5))
 
-        self.status_label = ctk.CTkLabel(status_container, text="Listo para iniciar descargas", font=ctk.CTkFont(size=11), text_color=TEXT_MUTED)
-        self.status_label.pack(anchor="w")
+        status_row = ctk.CTkFrame(status_container, fg_color="transparent")
+        status_row.pack(fill=ctk.X)
+        self.status_label = ctk.CTkLabel(status_row, text="Listo para iniciar descargas", font=ctk.CTkFont(size=11), text_color=TEXT_MUTED, anchor="w")
+        self.status_label.pack(side=ctk.LEFT, fill=ctk.X, expand=True)
+        self.queue_label = ctk.CTkLabel(status_row, text="", font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_MAIN)
+        self.queue_label.pack(side=ctk.RIGHT)
 
         self.progress_bar = ctk.CTkProgressBar(status_container, height=8, progress_color=ACCENT_BLUE)
         self.progress_bar.pack(fill=ctk.X, pady=(4, 0))
@@ -736,15 +790,23 @@ El archivo debe estar en formato Netscape:
         )
         self.download_button.pack(side=ctk.LEFT, fill=ctk.X, expand=True, padx=(0, 5))
 
-        ctk.CTkButton(
+        self.audio_button = ctk.CTkButton(
             btn_container, text="🎵 Solo Audio", command=self.download_audio_only,
             width=110, height=38, fg_color=ACCENT_GREEN, hover_color="#059669", text_color="white"
-        ).pack(side=ctk.LEFT, padx=2)
+        )
+        self.audio_button.pack(side=ctk.LEFT, padx=2)
 
-        ctk.CTkButton(
+        self.video_button = ctk.CTkButton(
             btn_container, text="🎬 Solo Video", command=self.download_video_only,
             width=110, height=38, fg_color=ACCENT_GREEN, hover_color="#059669", text_color="white"
-        ).pack(side=ctk.LEFT, padx=2)
+        )
+        self.video_button.pack(side=ctk.LEFT, padx=2)
+
+        self.cancel_button = ctk.CTkButton(
+            btn_container, text="⏹ Cancelar", command=self.cancel_download, state="disabled",
+            width=100, height=38, fg_color="#EF4444", hover_color="#DC2626", text_color="white"
+        )
+        self.cancel_button.pack(side=ctk.LEFT, padx=(2, 0))
 
 
     # ---------- LÓGICA DE NEGOCIO Y FUNCIONES DE EVENTOS ----------
@@ -755,6 +817,7 @@ El archivo debe estar en formato Netscape:
             with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
                 self.url_textbox.insert("end", f"\n{content}")
+            self.update_url_count()
 
     def open_output_dir(self):
         path = self.output_path.get()
@@ -797,29 +860,30 @@ El archivo debe estar en formato Netscape:
         filepath = filedialog.askopenfilename(defaultextension=".exe", filetypes=[("Executable", "*.exe"), ("All files", "*.*")])
         if filepath:
             self.ffmpeg_custom_path.set(filepath)
+            self.update_ffmpeg_status()
 
     def fetch_proxies_now(self):
         def fetch_thread():
-            self.status_label.configure(text="Consultando APIs de proxies...")
+            self.set_status("Consultando APIs de proxies...")
             h_p = get_proxies_from_api('http')
             s_p = get_proxies_from_api('socks5')
             if h_p or s_p:
                 save_proxy_list(h_p, s_p)
                 total = len(h_p) + len(s_p)
-                self.status_label.configure(text=f"✅ Obtenidos {total} proxies")
-                MessageBox.showinfo("Éxito", f"Se guardaron {total} proxies actualizados.")
+                self.set_status(f"✅ Obtenidos {total} proxies")
+                self.ui(MessageBox.showinfo, "Éxito", f"Se guardaron {total} proxies actualizados.")
             else:
-                self.status_label.configure(text="❌ Error consultando proxies")
+                self.set_status("❌ Error consultando proxies")
         threading.Thread(target=fetch_thread, daemon=True).start()
 
     def test_proxies(self):
         def test_thread():
-            self.status_label.configure(text="Probando conexión de proxies...")
+            self.set_status("Probando conexión de proxies...")
             h_p, s_p = load_proxy_list()
             w_h = [p for p in h_p[:5] if test_proxy(p, 'http')]
             w_s = [p for p in s_p[:5] if test_proxy(p, 'socks5')]
-            self.status_label.configure(text=f"✅ Test finalizado: {len(w_h) + len(w_s)} activos")
-            MessageBox.showinfo("Resultado", f"Proxies funcionales detectados:\nHTTP: {len(w_h)}\nSOCKS5: {len(w_s)}")
+            self.set_status(f"✅ Test finalizado: {len(w_h) + len(w_s)} activos")
+            self.ui(MessageBox.showinfo, "Resultado", f"Proxies funcionales detectados:\nHTTP: {len(w_h)}\nSOCKS5: {len(w_s)}")
         threading.Thread(target=test_thread, daemon=True).start()
 
     def manage_proxies(self):
@@ -874,17 +938,33 @@ El archivo debe estar en formato Netscape:
 
         ctk.CTkButton(api_win, text="Guardar APIs", command=save_apis, fg_color=ACCENT_ORANGE).pack(pady=10)
 
+    # Respetan el formato elegido en el menú; mp3/mp4 solo si está en "Original"
     def download_audio_only(self):
-        self.audio_format.set("mp3")
-        self.video_format.set("none")
-        self.start_download()
+        a_fmt = self.audio_format.get()
+        self.start_download(a_fmt=a_fmt if a_fmt != ORIGINAL else "mp3", v_fmt="none")
 
     def download_video_only(self):
-        self.audio_format.set("none")
-        self.video_format.set("mp4")
-        self.start_download()
+        v_fmt = self.video_format.get()
+        self.start_download(a_fmt="none", v_fmt=v_fmt if v_fmt != ORIGINAL else "mp4")
 
-    def start_download(self):
+    def cancel_download(self):
+        self.cancel_event.set()
+        self.cancel_button.configure(state="disabled")
+        self.status_label.configure(text="⏹ Cancelando... (se detiene al terminar el paso actual)")
+
+    # Tk no es thread-safe: los hilos de trabajo solo tocan widgets a través de after()
+    def ui(self, fn, *args, **kwargs):
+        self.master.after(0, lambda: fn(*args, **kwargs))
+
+    def set_status(self, text):
+        self.ui(self.status_label.configure, text=text)
+
+    def set_download_buttons(self, state):
+        for btn in (self.download_button, self.audio_button, self.video_button):
+            btn.configure(state=state)
+        self.cancel_button.configure(state="normal" if state == "disabled" else "disabled")
+
+    def start_download(self, a_fmt=None, v_fmt=None):
         urls = self.get_urls_from_textbox()
         if not urls:
             MessageBox.showwarning("Atención", "Por favor ingresa al menos una URL válida.")
@@ -898,115 +978,123 @@ El archivo debe estar en formato Netscape:
                 MessageBox.showerror("Error", f"No se pudo crear el directorio de destino:\n{e}")
                 return
 
+        # Leer las variables de Tk aquí (hilo principal), no dentro del hilo de descarga
+        v_res = self.video_resolution.get()
+        v_fmt = v_fmt or self.video_format.get()
+        a_fmt = a_fmt or self.audio_format.get()
+        v_fmt, a_fmt = ("none" if f == ORIGINAL else f for f in (v_fmt, a_fmt))
+        ffmpeg_path = self.ffmpeg_custom_path.get()
+        use_cookies, cookie_method, browser = self.use_cookies.get(), self.cookie_type.get(), self.selected_browser.get()
+        use_proxy, proxy_type = self.use_proxy.get(), self.proxy_type.get()
+        embed_metadata = self.embed_metadata.get()
+
+        self.cancel_event.clear()
+        self.set_download_buttons("disabled")
+
         def download_thread():
-            self.download_button.configure(state="disabled")
             total = len(urls)
+            failed = []
+            done = 0
 
             for idx, url in enumerate(urls, 1):
-                self.status_label.configure(text=f"Procesando ({idx}/{total}): {url[:40]}...")
-                self.progress_bar.set(0)
+                if self.cancel_event.is_set():
+                    break
+                self.ui(self.queue_label.configure, text=f"Cola {idx}/{total}")
+                self.partial_files, self.thumb_files = set(), set()
+                self.set_status(f"Preparando: {url[:60]}")
+                self.ui(self.progress_bar.set, 0)
 
                 ydl_opts = {
                     'outtmpl': os.path.join(out_dir, '%(title)s.%(ext)s'),
                     'progress_hooks': [self.ydl_progress_hook],
-                    'nocheckcertificate': True,
                     'ignoreerrors': True,
                 }
 
-                if self.ffmpeg_custom_path.get() and os.path.exists(self.ffmpeg_custom_path.get()):
-                    ydl_opts['ffmpeg_location'] = self.ffmpeg_custom_path.get()
+                if ffmpeg_path and os.path.exists(ffmpeg_path):
+                    ydl_opts['ffmpeg_location'] = ffmpeg_path
 
-                # ========== CONFIGURACIÓN DE COOKIES MEJORADA ==========
-                if self.use_cookies.get():
-                    method = self.cookie_type.get()
-                    
-                    if method == "archivo":
-                        # Usar archivo cookies.txt
+                # ========== CONFIGURACIÓN DE COOKIES ==========
+                if use_cookies:
+                    if cookie_method == "archivo":
                         cookie_file = get_cookie_file_path()
-                        if os.path.exists(cookie_file) and validate_cookie_file(cookie_file):
+                        if validate_cookie_file(cookie_file):
                             ydl_opts['cookiefile'] = cookie_file
-                            self.status_label.configure(text="🍪 Usando cookies desde archivo")
+                            self.set_status("🍪 Usando cookies desde archivo")
                         else:
-                            self.status_label.configure(text="⚠️ cookies.txt no válido")
-                            
-                    elif method == "navegador":
-                        # Usar cookies del navegador
-                        browser = self.selected_browser.get()
+                            self.set_status("⚠️ cookies.txt no válido")
+                    elif cookie_method == "navegador":
                         if browser != "ninguno":
-                            try:
-                                if browser_has_dpapi_issue(browser):
-                                    self.status_label.configure(
-                                        text=f"⚠️ {browser.title()} con DPAPI. Si falla, usa archivo"
-                                    )
-                                ydl_opts['cookiesfrombrowser'] = (browser,)
-                                self.status_label.configure(text=f"🔄 Usando cookies de {browser.title()}")
-                            except Exception as e:
-                                self.status_label.configure(text=f"❌ Error con {browser}: {str(e)[:40]}")
+                            ydl_opts['cookiesfrombrowser'] = (browser,)
+                            self.set_status(f"🔄 Usando cookies de {browser.title()}")
                         else:
-                            self.status_label.configure(text="⚠️ Sin navegador seleccionado")
-                            
-                    elif method == "token":
-                        # Usar tokens de sesión
-                        tokens = load_cookie_tokens()
-                        if tokens:
-                            # yt-dlp no soporta tokens directamente, pero podemos agregar como header
-                            # Esto es para casos específicos, normalmente no se usa
-                            ydl_opts['headers'] = {
-                                'Authorization': f'Bearer {tokens[0]}'
-                            }
-                            self.status_label.configure(text="🔑 Usando token de sesión")
-                        else:
-                            self.status_label.configure(text="❌ Sin tokens guardados")
+                            self.set_status("⚠️ Sin navegador seleccionado")
 
-                if self.use_proxy.get():
-                    p_addr = get_random_proxy(self.proxy_type.get())
+                if use_proxy:
+                    p_addr = get_random_proxy(proxy_type)
                     if p_addr:
-                        ydl_opts['proxy'] = f"{self.proxy_type.get()}://{p_addr}"
+                        ydl_opts['proxy'] = f"{proxy_type}://{p_addr}"
 
-                v_res, v_fmt, a_fmt = self.video_resolution.get(), self.video_format.get(), self.audio_format.get()
-                postprocessors = []
-
-                if a_fmt != "none" and v_fmt == "none":
-                    ydl_opts['format'] = 'bestaudio/best'
-                    postprocessors.append({'key': 'FFmpegExtractAudio', 'preferredcodec': a_fmt, 'preferredquality': '192'})
-                    if self.embed_metadata.get():
-                        postprocessors.extend([{'key': 'FFmpegMetadata'}, {'key': 'EmbedThumbnail'}])
-                        ydl_opts['writethumbnail'] = True
-                elif v_fmt != "none":
-                    if v_res in ["mejor", "none"]:
-                        ydl_opts['format'] = f'bestvideo[ext={v_fmt}]+bestaudio/best'
-                    else:
-                        ydl_opts['format'] = f'bestvideo[height<={v_res.replace("p", "")}]+bestaudio/best'
-
-                if postprocessors:
-                    ydl_opts['postprocessors'] = postprocessors
+                ydl_opts.update(build_media_opts(v_res, v_fmt, a_fmt, embed_metadata))
 
                 try:
                     with YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([url])
+                        if embed_metadata:
+                            ydl.add_post_processor(MusicTagsPP(force=a_fmt != "none" and v_fmt == "none"),
+                                                   when='pre_process')
+                        # con ignoreerrors, los fallos no lanzan excepción: se reflejan en el código de retorno
+                        if ydl.download([url]) != 0:
+                            failed.append(url)
+                        else:
+                            done += 1
+                except DownloadCancelled:
+                    remove_partial_files(self.partial_files, self.thumb_files)
+                    break
                 except Exception as e:
                     print(f"Error descargando {url}: {e}")
+                    failed.append(url)
 
-            self.status_label.configure(text="✅ Todas las descargas completadas con éxito.")
-            self.progress_bar.set(1.0)
-            self.download_button.configure(state="normal")
-            send_notification("Multi Downloader Pro", "¡Cola de descargas finalizada!")
-            MessageBox.showinfo("Finalizado", "Se procesaron todas las descargas de la cola.")
+            if self.cancel_event.is_set():
+                summary = f"⏹ Cancelado: {done}/{total} descargas completadas."
+                detail = summary
+                show = MessageBox.showinfo
+            elif failed:
+                summary = f"⚠️ {done}/{total} descargas completadas, {len(failed)} con errores."
+                detail = summary + "\n\nFallaron:\n" + "\n".join(u[:80] for u in failed)
+                show = MessageBox.showwarning
+            else:
+                summary = "✅ Todas las descargas completadas con éxito."
+                detail = summary
+                show = MessageBox.showinfo
+
+            self.set_status(summary)
+            self.ui(self.queue_label.configure, text="")
+            self.ui(self.progress_bar.set, 1.0 if not self.cancel_event.is_set() else 0)
+            self.ui(self.set_download_buttons, "normal")
+            send_notification("Multi Downloader Pro", summary)
+            self.ui(show, "Finalizado", detail)
 
         threading.Thread(target=download_thread, daemon=True).start()
 
     def ydl_progress_hook(self, d):
+        # Archivos a medias del elemento actual, para borrarlos si se cancela
+        self.partial_files.update((d.get('tmpfilename'), d.get('filename')))
+        self.thumb_files.update(t.get('filepath') for t in (d.get('info_dict') or {}).get('thumbnails') or [])
+        if self.cancel_event.is_set():
+            raise DownloadCancelled("Cancelado por el usuario")
+        title = (d.get('info_dict') or {}).get('title') or ''
+        title = title if len(title) <= 45 else title[:44] + "…"
         if d['status'] == 'downloading':
-            total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
-            downloaded = d.get('downloaded_bytes', 0)
+            total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+            downloaded = d.get('downloaded_bytes') or 0
             if total_bytes > 0:
                 pct = downloaded / total_bytes
-                self.progress_bar.set(pct)
-                speed = d.get('_speed_str', 'N/A')
-                eta = d.get('_eta_str', 'N/A')
-                self.status_label.configure(text=f"Descargando: {int(pct*100)}% | Velocidad: {speed} | Restante: {eta}")
+                self.ui(self.progress_bar.set, pct)
+                # yt-dlp añade colores ANSI si se lanzó desde una consola
+                speed = remove_terminal_sequences(d.get('_speed_str') or 'N/A').strip()
+                eta = remove_terminal_sequences(d.get('_eta_str') or 'N/A').strip()
+                self.set_status(f"⬇️ {title} — {int(pct*100)}% · {speed} · quedan {eta}")
         elif d['status'] == 'finished':
-            self.status_label.configure(text="Conversión/Procesamiento final...")
+            self.set_status(f"⚙️ {title} — procesando (unir / convertir / metadatos)...")
 
 
 if __name__ == "__main__":

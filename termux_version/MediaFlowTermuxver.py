@@ -65,7 +65,8 @@ def get_proxies_from_api(proxy_type='http', timeout=10000):
     try:
         params = {
             'request': 'display_proxies',
-            'proxy_format': 'protocolipport',
+            'protocol': proxy_type,
+            'proxy_format': 'ipport',  # sin prefijo: el prefijo se añade al usarlo
             'format': 'text',
             'timeout': timeout,
         }
@@ -86,21 +87,26 @@ def get_proxies_from_api(proxy_type='http', timeout=10000):
     
     return []
 
+def refresh_proxies(proxy_type='http'):
+    """Descarga proxies de la API y los guarda, conservando los del otro tipo."""
+    api_proxies = get_proxies_from_api(proxy_type)
+    if api_proxies:
+        http_proxies, socks5_proxies = load_proxy_list()
+        if proxy_type == 'http':
+            save_proxy_list(api_proxies, socks5_proxies)
+        else:
+            save_proxy_list(http_proxies, api_proxies)
+    return api_proxies
+
 def get_random_proxy(proxy_type='http'):
     http_proxies, socks5_proxies = load_proxy_list()
     if proxy_type == 'http' and http_proxies:
         return random.choice(http_proxies)
     elif proxy_type == 'socks5' and socks5_proxies:
         return random.choice(socks5_proxies)
-    
-    api_proxies = get_proxies_from_api(proxy_type)
-    if api_proxies:
-        if proxy_type == 'http':
-            save_proxy_list(api_proxies, socks5_proxies)
-        else:
-            save_proxy_list(http_proxies, api_proxies)
-        return random.choice(api_proxies)
-    return None
+
+    api_proxies = refresh_proxies(proxy_type)
+    return random.choice(api_proxies) if api_proxies else None
 
 # --- CLASE PRINCIPAL CON INTERFAZ RICH ---
 
@@ -220,7 +226,7 @@ class DownloaderCLI:
         if self.use_proxy:
             self.proxy_type = Prompt.ask("Tipo de proxy", choices=["http", "socks5"], default=self.proxy_type)
             if Confirm.ask("¿Obtener una lista nueva de proxies ahora?"):
-                get_proxies_from_api(self.proxy_type)
+                refresh_proxies(self.proxy_type)
                 Prompt.ask("\nPresiona [enter] para continuar")
 
     def start_download(self, audio_only, video_only):
@@ -242,7 +248,6 @@ class DownloaderCLI:
                 'noplaylist': True,
                 'socket_timeout': 30,
                 'retries': 5,
-                'nocheckcertificate': True,
                 'quiet': True,
             }
 

@@ -112,6 +112,15 @@ main() {
         fi
     fi
 
+    # Tkinter (necesario para la GUI) no viene con python3 en la mayoría de distros
+    case $PKG_MANAGER in
+        apt|zypper) deps+=("python3-tk") ;;
+        pacman) deps+=("tk") ;;
+        dnf|yum) deps+=("python3-tkinter") ;;
+        apk) deps+=("py3-tkinter") ;;
+        brew) deps+=("python-tk") ;;
+    esac
+
     echo -e "${YELLOW}📥 Instalando dependencias del sistema: ${deps[*]}${NC}"
     install_packages "${deps[@]}"
 
@@ -142,13 +151,13 @@ main() {
     fi
 
     # 7. Ejecutar la interfaz gráfica en segundo plano
-    if [ -f "MultiDownloaderv2.0.py" ]; then
+    if [ -f "MultiDownloaderv.py" ]; then
         echo -e "${GREEN}🚀 Abriendo MultiDownloaderv...${NC}"
         python3  MultiDownloaderv.py > /dev/null 2>&1 &
         sleep 2
         echo -e "${GREEN}✅ Aplicación lanzada correctamente. Puedes cerrar esta terminal.${NC}"
     else
-        echo -e "${RED}❌ No se encontró el archivo MultiDownloaderv2.0.py. Verifica que estés en el directorio correcto.${NC}"
+        echo -e "${RED}❌ No se encontró el archivo MultiDownloaderv.py. Verifica que estés en el directorio correcto.${NC}"
         exit 1
     fi
 
@@ -157,4 +166,5 @@ main() {
 }
 
 # ---- Ejecución ----
+cd "$(dirname "$0")"  # trabajar en la carpeta del script, como start.bat
 main

@@ -22,9 +22,10 @@ echo -e "${BLUE}==========================================${NC}"
 echo ""
 
 # 2. Ejecutar la aplicación principal de Python
-if [ -f "main.py" ]; then
+cd "$(dirname "$0")"
+if [ -f "MediaFlowTermuxver.py" ]; then
     echo -e "${YELLOW}[+] Iniciando script principal...${NC}"
-    python main.py
+    python MediaFlowTermuxver.py
 else
-    echo -e "${YELLOW}[!] 'main.py' no se encuentra en este directorio.${NC}"
+    echo -e "${YELLOW}[!] 'MediaFlowTermuxver.py' no se encuentra en este directorio.${NC}"
 fi
