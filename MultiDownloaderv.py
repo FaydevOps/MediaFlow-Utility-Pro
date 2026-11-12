@@ -377,7 +377,7 @@ class MultiDownloaderGUI:
         self.header_frame.pack(fill=ctk.X, padx=25, pady=(15, 5))
 
         # Intentar cargar la imagen del logo desde 'assets/youtubemp3.png'
-        logo_path = os.path.join(get_base_path(), "assets", "youtubemp3.png")
+        logo_path = os.path.join(get_base_path(), "assets", "logo.jpg")
         if os.path.exists(logo_path):
             try:
                 logo_image = Image.open(logo_path)
